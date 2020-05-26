@@ -1,10 +1,11 @@
-from settings import *
 import pygame
+from settings import *
 from os import path
-import sprites
 from sys import exit
-from random import randint
-import neat
+import sprites
+from random import randrange
+import ann
+from neat.nn import FeedForwardNetwork
 
 
 class Game:
@@ -13,98 +14,106 @@ class Game:
         pygame.init()
         self.screen = pygame.display.set_mode((WIDTH, HEIGHT))
         pygame.display.set_caption(TITLE)
-        self.clock = pygame.time.Clock()
         self.load_data()
-        self.neat_init()
         self.playing = True
-        self.last_pipe_get = 0
-        self.delta_time = 0
-        self.pipes_pair = []
-        self.birds_list = []
+        self.clock = pygame.time.Clock()
 
-    def neat_init(self):
-        neat_config_path = path.join(path.dirname(__file__), 'neat_config.txt')
-        self.neat_config = neat.config.Config(neat.DefaultGenome, neat.DefaultReproduction,
-                                              neat.DefaultSpeciesSet, neat.DefaultStagnation,
-                                              neat_config_path)
-        self.bird_pop = neat.Population(self.neat_config)
-        self.bird_pop.add_reporter(neat.StdOutReporter(True))
-        self.bird_pop.add_reporter(neat.StatisticsReporter())
+    @staticmethod
+    def load_img(dir, filename):
+        return pygame.image.load(path.join(dir, filename)).convert_alpha()
 
     def load_data(self):
-        dir = path.join(path.dirname(__file__), 'imgs')
-        self.bird_imgs = [pygame.image.load(path.join(dir, 'bird1.png')).convert_alpha(),
-                          pygame.image.load(path.join(dir, 'bird2.png')).convert_alpha(),
-                          pygame.image.load(path.join(dir, 'bird3.png')).convert_alpha()]
-        self.bg_img = pygame.image.load(path.join(dir, 'bg.png')).convert_alpha()
-        self.base_img = pygame.image.load(path.join(dir, 'base.png')).convert_alpha()
-        self.base_img = pygame.transform.scale(self.base_img, (WIDTH, int(WIDTH/336*112//1)))
-        self.pipe_img = pygame.image.load(path.join(dir, 'pipe.png')).convert_alpha()
+        img_dir = path.join(path.dirname(__file__), 'imgs')
+        self.img_bird = [self.load_img(img_dir, 'bird1.png'),
+                         self.load_img(img_dir, 'bird2.png'),
+                         self.load_img(img_dir, 'bird3.png')]
+        self.img_pipe = self.load_img(img_dir, 'pipe.png')
+        self.img_base = self.load_img(img_dir, 'base.png')
+        self.img_bg = self.load_img(img_dir, 'bg.png')
+        self.neat = ann.NeuronNetWork(path.join(path.dirname(__file__), 'neat_config.txt'))
 
-    def game_reset(self):
-        self.pipes_pair = []
-
-    def new(self):
+    def new(self, genomes, config):
         self.all_sprites = pygame.sprite.LayeredUpdates()
+        # self.all_sprites = pygame.sprite.Group()
         self.birds = pygame.sprite.Group()
         self.mobs = pygame.sprite.Group()
-        self.game_reset()
-        self.bird_pop.run(self.run, 50)
-        # self.run()
+        self.pipes = pygame.sprite.Group()
+        self.bird_pool = {}
+        self.nets = {}
+        for genome_id, genome in genomes:
+            genome.fitness = 0
+            self.bird_pool[genome_id] = sprites.Player(self)
+            self.nets[genome_id] = FeedForwardNetwork.create(genome, config)
+        # self.player = sprites.Player(self)
+        self.pipes_pool = [sprites.PipePair(self, WIDTH/2), sprites.PipePair(self, WIDTH+50)]
+        self.pipe_gen_time = pygame.time.get_ticks()
+        self.base_pool = [sprites.Base(self, 0), sprites.Base(self, 336)]
 
     def pipes_generator(self):
         now = pygame.time.get_ticks()
-        if now - self.last_pipe_get > randint(2000, 3500):
-            top = HEIGHT / 2 + randint(-50, 50) - 100
-            pt = sprites.Pipe(self, 'up', WIDTH + 100, top)
-            pd = sprites.Pipe(self, 'down', WIDTH + 100, top + randint(PIPE_GAP_LOWBOUND, PIPE_GAP_UPBOUND))
-            self.last_pipe_get = now
-            self.pipes_pair.append([pt, pd])
+        if now - self.pipe_gen_time > randrange(2500, 4000):
+            self.pipes_pool.append(sprites.PipePair(self, WIDTH+50))
+            self.pipe_gen_time = now
 
-    def update(self):
+    def run(self):
+        self.neat.run(self)
+
+    def eval_neat(self, genomes, config):
+        self.new(genomes, config)
+        while self.playing:
+            self.dt = self.clock.tick(FPS) / 1000
+            self.events()
+            self.update(genomes)
+            self.draw()
+        self.nets = {}
+        self.bird_pool = {}
+        self.pipes_pool = []
+        self.playing = True
+
+    def pipe_death_check(self):
+        if self.pipes_pool[0].pipe_up.rect.right < -10:
+            self.pipes_pool[0].kill()
+            self.pipes_pool.pop(0)
+
+    def player_death_check(self):
+        pass
+
+    def get_dist(self):
+        if self.pipes_pool[0].pipe_up.rect.left + 26< POSITION_X:
+            pair = self.pipes_pool[1]
+            return pair.pipe_up.rect.left + 26, pair.pipe_up.rect.bottom, pair.pipe_down.rect.top
+        else:
+            pair = self.pipes_pool[0]
+            return pair.pipe_up.rect.left + 26, pair.pipe_up.rect.bottom, pair.pipe_down.rect.top
+
+    def update(self, genomes):
         self.pipes_generator()
-        dist, up, down = self.pipes_pair[0][0].rect.left - WIDTH / 6, self.pipes_pair[0][0].rect.bottom,\
-                         self.pipes_pair[0][1].rect.top
-        if len(self.birds) > 0 and dist < 0:
-            dist, up, down = self.pipes_pair[1][0].rect.left - WIDTH / 6, self.pipes_pair[1][0].rect.bottom, \
-                             self.pipes_pair[1][1].rect.top
-        for num, sprite in enumerate(self.birds_list):
-            sprite.update(num, dist, up, down)
-        for g in self.ge:
-            g.fitness += .1
+        self.pipe_death_check()
+        if not len(self.bird_pool) > 0:
+            self.playing = False
+        dist, top, down = self.get_dist()
+        for bird_id, genome in genomes:
+            if not self.bird_pool.get(bird_id):
+                continue
+            indicator = False
+            bird = self.bird_pool[bird_id]
+            output = self.nets[bird_id].activate((bird.pos.y, dist, bird.vel.y,
+                                                  bird.pos.y-top, bird.pos.y-down))
+            if output[0] > .5:
+                indicator = True
+            res = bird.update(indicator)
+            if res:
+                genome.fitness -= 10
+                self.bird_pool[bird_id].kill()
+                self.bird_pool.pop(bird_id)
+            else:
+                genome.fitness += .1
         self.mobs.update()
 
     def draw(self):
-        self.screen.blit(pygame.transform.scale(self.bg_img, (WIDTH, HEIGHT)), self.bg_img.get_rect())
+        self.screen.blit(pygame.transform.scale(self.img_bg, (WIDTH, HEIGHT)), (0, 0))
         self.all_sprites.draw(self.screen)
         pygame.display.update()
-
-    def neat_info(self):
-        self.ge = []
-        self.nets = []
-        for _, g in self.genomes:
-            net = neat.nn.FeedForwardNetwork.create(g, self.neat_config)
-            self.nets.append(net)
-            bird = sprites.Bird(self, WIDTH / 6, HEIGHT / 2)
-            self.birds_list.append(bird)
-            g.fitness = 0
-            self.ge.append(g)
-        sprites.Base(self, 0)
-        pt = sprites.Pipe(self, 'up', WIDTH - 50, HEIGHT / 2 - randint(100, 200))
-        pd = sprites.Pipe(self, 'down', WIDTH - 50, HEIGHT / 2 + randint(10, 50))
-        self.pipes_pair.append([pt, pd])
-        self.last_pipe_get = pygame.time.get_ticks()
-
-    def run(self, ge, config):
-        self.game_reset()
-        self.genomes = ge
-        self.neat_config = config
-        self.neat_info()
-        while self.playing and len(self.birds_list) > 0:
-            self.dt = self.clock.tick(FPS) / 1000
-            self.events()
-            self.update()
-            self.draw()
 
     def events(self):
         for event in pygame.event.get():
@@ -115,10 +124,11 @@ class Game:
                     self.quit()
 
     def quit(self):
+        self.playing = False
         pygame.quit()
         exit()
 
 
 if __name__ == '__main__':
     g = Game()
-    g.new()
+    g.run()
